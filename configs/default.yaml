@@ -1,0 +1,94 @@
+# Default configuration for the Letteri MLP multi-perceptron replication
+# Milestone 0: Lock assumptions and contracts
+
+data:
+  source: yfinance            # or "csv" for local file ingest later
+  ticker: ANF
+  start_date: "2011-10-16"
+  cutoff_date: "2021-10-16"   # train/test split cutoff
+  end_date: "2021-11-20"
+  horizon_days: 30            # forecast horizon (trading days)
+  lag_t: 5                    # window size t
+  cache:
+    raw_dir: data/raw
+    processed_dir: data/processed
+
+model:
+  # Triple EMA configuration and explicit operator precedence for strategy logic
+  tema_period: 3
+  operator_precedence: "((Low<TEMA_Low or High<TEMA_High) and (Close<TEMA_Close or Open<TEMA_Open))"
+  # scaler: "standard" or "minmax"
+  scaler_type: standard
+
+  # Reproducibility seeds
+  seeds:
+    python: 42
+    numpy: 42
+    tensorflow: 42
+
+  # Dropout defaults (paper likely typo 0.2%. Keep both options)
+  dropout: 0.2
+  dropout_alt: 0.002
+
+dnn:
+  # Hidden layer sizing per paper: first = n*t, second = n*bs (with t=bs=5 => 5n each)
+  n_grid: [1, 2, 3, 4]
+  bs: 5
+  l2: 1.0e-4
+  lr: 0.001
+  epochs: 200
+  batch_size: 32
+  cv_splits: 3
+  early_stopping: true
+  patience: 20
+  # Whether to infer input_dim from lag_t
+  input_dim_from_t: true
+  loss: mae
+  optimizer: adam
+
+  # Grid search specification (used by Milestone 9 GridSearch-like routine)
+  # You can override these lists to expand/contract the search.
+  grid:
+    n: [1, 2, 3, 4]                   # first-layer multiplier (n)
+    dropout: [0.2, 0.002]             # candidate dropout rates (model.dropout and dropout_alt)
+    l2: [1.0e-4, 1.0e-3]              # L2 weight decay candidates
+    lr: [0.001, 0.0005, 0.0001]       # learning rate candidates
+    epochs: [50, 100, 200]            # candidate training epochs (early stopping may cut short)
+    batch_size: [16, 32, 64]          # candidate batch sizes for training
+
+backtest:
+  initial_cash: 100.0
+  execution_price: open       # fill at actual Open
+  cost_bps: 10.0              # commission per side (basis points)
+  slippage_bps: 5.0           # slippage per fill (basis points)
+  allow_fractional: true
+  mark_to_market: close       # equity marked at actual Close
+
+io:
+  models_dir: models
+  forecasts_dir: forecasts
+  reports_dir: reports
+  logs_dir: logs
+  grid_search_path: models/grid_search.json
+
+logging:
+  level: INFO
+  fmt: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"
+
+contracts:
+  # Data contracts to freeze interfaces across layers
+  data_schema:
+    index: DatetimeIndex
+    columns: ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+  predicted_schema:
+    index: ForecastDates
+    columns: ["Open", "High", "Low", "Close"]
+  signals_schema:
+    index: ForecastDates
+    columns: ["signal"]
+
+# Notes:
+# - All dates are inclusive of trading days; calendar alignment handled in data layer.
+# - Set cost_bps and slippage_bps to 0.0 for no-cost sensitivity runs.
+# - Adjust operator_precedence if you wish to test alternate interpretations from the PDF.

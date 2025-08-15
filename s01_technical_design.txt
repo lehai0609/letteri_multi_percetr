@@ -1,0 +1,636 @@
+* Checklist
+
+  * Synthesize system workflow from the paper and initial plan; define end-to-end architecture (data to backtest).
+  * Specify data pipeline, feature/target scheme, DNN model architecture, and multi-step forecasting procedure.
+  * Formalize Triple EMA-based signal generation and baseline threshold rule; define backtester and metrics.
+  * Provide project structure, class/function specs, and pseudocode for core algorithms.
+  * Define a comprehensive test plan with unit/integration/e2e cases and validation criteria.
+  * Clearly mark assumptions where the sources are silent or ambiguous.
+
+
+# Technical Design Document (TDD)
+
+## 1. High-Level Architecture
+
+### 1.1 Overview
+
+* Sourced: IvanLetteri.pdf describes a DNN-based (multi-layer perceptron) stock trading system that:
+
+  * Trains four identical feed-forward networks on OHLC series (one per O/H/L/C).
+  * Uses a lag window t = 5.
+  * Forecasts recursively the next 30 trading days of OHLC.
+  * Generates trading signals using a Triple EMA strategy on the predicted OHLC.
+  * Backtests by mapping predicted signals to actual market data over the last 30 days (validation set) with an initial \$100 budget.
+* Sourced: s00\_initial\_plan.txt mirrors the above and adds:
+
+  * Baseline ARIMA for comparison, buy-and-hold and persistence forecasters as benchmarks.
+  * Explicit backtesting design and evaluation metrics.
+* Objective: Replicate the system exactly as described, while highlighting and parameterizing any ambiguous details.
+
+### 1.2 System Components
+
+* Data Layer
+
+  * DataIngestor: fetches daily OHLC for the asset (e.g., ANF) and aligns to trading calendar.
+  * PriceAdjuster: adjusts OHLC for splits/dividends via adjustment factor.
+  * Splitter: time-series split into train and 30-day validation/test windows.
+  * Scaler: per-series scaler fit on train window.
+* Modeling Layer
+
+  * FeatureWindowing: sliding-window lag features of size t for each series.
+  * DNNRegressor (4 instances): Keras MLP regressors, consistent architecture, GridSearchCV for hyperparameters.
+  * BaselineARIMA: auto-ARIMA baseline for reference forecasts.
+* Forecasting Layer
+
+  * RecursiveForecaster: one-step-ahead recursive forecasting to build a 30-day OHLC path.
+* Signal Layer
+
+  * IndicatorEngine: Triple EMA (TEMA) computation on predicted OHLC.
+  * StrategyTripleEMA: entry/exit logic as per the paper’s formula (applied to predicted OHLC).
+  * StrategyThreshold: entry/exit rule using predicted Close vs Open.
+* Backtesting Layer
+
+  * BacktestEngine: maps predicted signals to actual OHLC execution (trades at actual Open), handles portfolio/costs.
+  * Portfolio, Order, Trade: accounting entities.
+* Evaluation and Reporting
+
+  * ForecastMetrics: MAE, RMSE, MAPE, EVS per series.
+  * RiskMetrics: Sharpe, Sortino, Calmar, Max Drawdown, Expectancy Ratio, win rate.
+  * Benchmarks: buy-and-hold, persistence forecaster, ARIMA.
+  * ReportBuilder: plots and summaries.
+
+Assumptions
+
+* Libraries: pandas, numpy, scikit-learn, TensorFlow/Keras (via SciKeras), statsmodels, yfinance (or equivalent), matplotlib; pytest for testing.
+* Random seeds fixed for reproducibility.
+
+### 1.3 Data Flow
+
+Text Diagram
+
+\[Yahoo Finance/CSV] -> DataIngestor -> PriceAdjuster -> Splitter (train | test30)
+-> Scaler(fit on train) -> FeatureWindowing(t=5) -> DNNRegressor x4 (GridSearchCV)
+-> RecursiveForecaster(30 days) -> Predicted OHLC(30)
+-> IndicatorEngine(TEMA on predicted OHLC) -> Strategy (signals on predicted OHLC)
+-> BacktestEngine (execute on actual OHLC of same dates)
+-> Trades/Equity Curve -> RiskMetrics/ForecastMetrics -> ReportBuilder
+
+Notes
+
+* Sourced: lag t=5, 30-day horizon, four DNNs; Triple EMA-driven signals.
+* Sourced: signals from predictions are mapped to actual OHLC for backtest.
+* Assumptions: execution at actual Open; transaction costs configurable (default 10 bps each side).
+
+## 2. Detailed Design
+
+### 2.1 File/Folder Structure
+
+Code block listing with explanations
+
+project\_root/
+README.md                    # How to run end-to-end; cites paper and configuration choices.
+pyproject.toml               # Project metadata and dependencies (or requirements.txt).
+requirements.txt             # Alternate dependency pinning.
+configs/
+default.yaml               # Asset, dates, costs, seeds, t=5, model search space, etc.
+data/
+raw/                       # Raw data snapshot (csv/parquet).
+processed/                 # Cleaned/adjusted/split datasets; scalers serialized.
+models/
+dnn\_open.keras             # Saved Keras model for Open.
+dnn\_high.keras             # Saved Keras model for High.
+dnn\_low\.keras             # Saved Keras model for Low.
+dnn\_close.keras            # Saved Keras model for Close.
+grid\_search.json           # Best hyperparameters from GridSearchCV.
+notebooks/
+00\_exploration.ipynb       # Optional EDA, stationarity checks (ADF), ACF/PACF plots.
+10\_run\_end\_to\_end.ipynb    # Reproducible end-to-end with plots for the paper's dates.
+scripts/
+train.py                   # CLI: train DNNs + save artifacts.
+forecast.py                # CLI: generate 30-day predicted OHLC.
+backtest.py                # CLI: run strategy/backtest and benchmarks, output report.
+src/
+data/
+ingest.py                # DataIngestor
+adjust.py                # PriceAdjuster
+split.py                 # Splitter
+scale.py                 # Scaler
+features/
+window\.py                # FeatureWindowing (sliding window for lag t)
+models/
+dnn.py                   # Keras model builder + SciKeras wrapper + GridSearchCV
+arima.py                 # BaselineARIMA (auto-ARIMA using statsmodels)
+forecasting/
+recursive.py             # RecursiveForecaster for 30-step OHLC
+indicators/
+tema.py                  # Triple EMA/TEMA implementations
+strategies/
+threshold.py             # StrategyThreshold
+triple\_ema.py            # StrategyTripleEMA (paper’s rules)
+backtest/
+engine.py                # BacktestEngine + Portfolio + Orders/Trades
+execution.py             # Execution model (open-price fill, costs)
+metrics/
+forecast.py              # MAE/RMSE/MAPE/EVS
+risk.py                  # Sharpe/Sortino/Calmar/MDD/Expectancy
+reporting/
+report.py                # ReportBuilder: tables/plots; save artifacts
+utils/
+logging.py               # Logging setup
+dates.py                 # Trading calendar utils
+io.py                    # Serialization helpers (models, scalers)
+config.py                # Load/validate YAML config
+tests/
+unit/                      # Unit tests per module
+integration/               # Cross-module tests
+e2e/                       # End-to-end reproducibility tests
+LICENSE
+
+### 2.2 Class & Function Specifications
+
+* DataIngestor (src/data/ingest.py):
+
+  * Purpose: Download or load daily OHLC for a ticker across a date range; ensure continuous trading calendar.
+  * Inputs: ticker (str), start\_date (str/Date), end\_date (str/Date), source ("yfinance"/path), adjust (bool).
+  * Outputs: DataFrame with index=Date, columns=\[Open, High, Low, Close, Adj Close, Volume].
+  * Methods:
+
+    * fetch(): DataFrame
+    * validate\_calendar(df): checks trading day continuity; logs gaps.
+
+* PriceAdjuster (src/data/adjust.py):
+
+  * Purpose: Adjust OHLC for splits/dividends using adjustment factor derived from Adj Close/Close.
+  * Inputs: df with OHLC and Adj Close.
+  * Outputs: adjusted DataFrame with Open, High, Low, Close adjusted consistently.
+  * Methods:
+
+    * adjust\_ohlc(df): DataFrame
+
+* Splitter (src/data/split.py):
+
+  * Purpose: Create train and fixed 30-day test windows by cutoff date.
+  * Inputs: df, cutoff\_date (Date), horizon\_days=30.
+  * Outputs: df\_train, df\_test (exact 30 trading days).
+  * Methods:
+
+    * split\_by\_cutoff(df, cutoff, horizon): (df\_train, df\_test)
+
+* Scaler (src/data/scale.py):
+
+  * Purpose: Fit per-series scaler on train; transform/inverse-transform as needed.
+  * Inputs: series name, fit data (Series), scaler\_type ("standard" or "minmax").
+  * Outputs: scaler object; transform/inverse methods.
+  * Methods:
+
+    * fit(series): self
+    * transform(series): Series
+    * inverse(values): np.ndarray
+    * save/load(path)
+
+* FeatureWindowing (src/features/window\.py):
+
+  * Purpose: Build supervised regression dataset: last t values -> next value.
+  * Inputs: series (Series), window\_size t (int).
+  * Outputs: X (np.ndarray \[n\_samples, t]), y (np.ndarray \[n\_samples]).
+  * Methods:
+
+    * build\_xy(series, t): (X, y)
+    * last\_window(series, t): np.ndarray of shape (t,)
+
+* DNNRegressor (src/models/dnn.py):
+
+  * Purpose: Keras MLP for regression with SciKeras wrapper for GridSearchCV.
+  * Inputs (builder params):
+
+    * input\_dim (int), n (int), t (int), bs (int), dropout\_rate (float), lr (float), l2 (float), epochs (int), batch\_size (int), patience (int), random\_state (int).
+  * Outputs: fitted SciKerasRegressor; saved Keras model.
+  * Attributes/Methods:
+
+    * build\_model(input\_dim, n, t, bs, dropout\_rate, lr, l2): Keras Model
+
+      * Architecture: Input(t) -> Dense(n*t, ReLU, L2) -> Dropout -> Dense(n*bs, ReLU, L2) -> Dropout -> Dense(1, linear)
+      * Loss: MAE; Optimizer: Adam(lr)
+    * grid\_search(X, y, cv, param\_grid): best\_estimator\_, best\_params\_
+    * fit(X, y, validation\_split or val\_data): self
+    * predict(X): y\_hat
+    * save(path), load(path)
+
+* BaselineARIMA (src/models/arima.py):
+
+  * Purpose: Auto-ARIMA baseline predictor using statsmodels with automatic order selection (one-step recursive for 30 days).
+  * Inputs: series (Series), seasonal=False, max_p/max_q/max_d for order selection range.
+  * Outputs: 30-step forecast array; model summary; AIC/BIC; selected order.
+  * Methods:
+
+    * fit(series): self
+    * forecast(h): np.ndarray
+    * diagnostics(): dict (includes selected order, AIC, BIC)
+
+* RecursiveForecaster (src/forecasting/recursive.py):
+
+  * Purpose: Use four trained regressors + scalers to produce a coherent 30-day OHLC path via recursive one-step prediction.
+  * Inputs: last t actual values per series (scaled), models per series, scalers, horizon=30.
+  * Outputs: DataFrame pred\_df: index=forecast\_dates, columns=\[Open, High, Low, Close] (original scale).
+  * Methods:
+
+    * forecast(next\_dates, last\_windows, models, scalers, t, horizon): DataFrame
+
+* IndicatorEngine (src/indicators/tema.py):
+
+  * Purpose: Compute EMA and TEMA for a series.
+  * Inputs: series (Series), period n (int).
+  * Outputs: Series of TEMA values.
+  * Methods:
+
+    * ema(series, n): Series
+    * tema(series, n): Series  // TEMA = 3*EMA - 3*EMA(EMA) + EMA(EMA(EMA))
+    * tema\_ohlc(df, n): DataFrame of TEMA per column if needed.
+
+* StrategyThreshold (src/strategies/threshold.py):
+
+  * Purpose: Entry/exit using predicted Close vs predicted Open per day.
+  * Inputs: predicted\_df (OHLC), position state.
+  * Outputs: signals DataFrame with columns \[signal] where +1=enter/hold long, 0=flat; and event markers \[enter, exit].
+  * Methods:
+
+    * generate\_signals(pred\_df): DataFrame
+
+* StrategyTripleEMA (src/strategies/triple\_ema.py):
+
+  * Purpose: Apply the paper’s Triple EMA entry/exit rules over predicted OHLC.
+  * Inputs: predicted\_df (OHLC), TEMA\_df per O/H/L/C (same dates).
+  * Outputs: signals DataFrame \[signal, enter, exit].
+  * Methods:
+
+    * generate\_signals(pred\_df, tema\_df): DataFrame
+  * Entry Rule (Sourced, as-is):
+
+    * if (Low < TEMA(Low)) or (High < TEMA(High)) and (Close < TEMA(Close)) or (Open < TEMA(Open)) then enter long.
+  * Exit Rule (Sourced, as-is):
+
+    * if (Low > TEMA(Low)) or (High > TEMA(High)) and (Close > TEMA(Close)) or (Open > TEMA(Open)) then exit/flat.
+  * Assumptions:
+
+    * Operator precedence: implement as ((Low < TEMA(Low)) or (High < TEMA(High))) and ((Close < TEMA(Close)) or (Open < TEMA(Open))) for entry; symmetric > for exit. This matches a sensible conjunctive structure; the PDF’s parentheses are ambiguous.
+
+* BacktestEngine (src/backtest/engine.py):
+
+  * Purpose: Execute signals by mapping to actual OHLC for the same forecast dates; track portfolio with costs.
+  * Inputs: actual\_df (OHLC), signals\_df, initial\_cash, cost\_bps, slippage\_bps, allow\_fractional (bool).
+  * Outputs: Trades list, equity curve DataFrame, summary stats.
+  * Methods:
+
+    * run(actual\_df, signals\_df): (trades, equity\_curve, stats)
+    * fill\_price(date, side): uses actual Open price of date; applies slippage and commission
+    * portfolio accounting: buy/sell all-in/all-out; support fractional shares.
+
+* RiskMetrics (src/metrics/risk.py):
+
+  * Purpose: Compute trading performance metrics.
+  * Inputs: equity\_curve (Series), trades list, returns (Series).
+  * Outputs: dict of metrics: total\_return, MDD, Sharpe, Sortino, Calmar, Expectancy, win\_rate, avg\_win, avg\_loss, trade\_count.
+  * Methods:
+
+    * max\_drawdown(equity): float
+    * sharpe(returns, rf=0): float
+    * sortino(returns, rf=0): float
+    * calmar(returns, mdd): float
+    * expectancy(win\_rate, avg\_win, avg\_loss): float
+
+* ForecastMetrics (src/metrics/forecast.py):
+
+  * Purpose: Compute MAE, RMSE, MAPE, EVS for each OHLC series.
+  * Inputs: actual\_df, predicted\_df.
+  * Outputs: dict per series.
+  * Methods:
+
+    * metrics(actual, pred): dict
+
+* ReportBuilder (src/reporting/report.py):
+
+  * Purpose: Assemble plots and summaries, save to disk.
+  * Inputs: metrics dicts, trades, equity curve, predicted vs actual paths.
+  * Outputs: PNGs, JSON/CSV summaries.
+
+* CLI Scripts (scripts/train.py, forecast.py, backtest.py):
+
+  * Purpose: Orchestrate end-to-end pipeline.
+  * Inputs: configs/default.yaml overrides; output dirs.
+  * Outputs: serialized models, forecasts, backtest reports.
+
+### 2.3 API Interface (If applicable)
+
+* Endpoint: CLI-based
+
+  * Method: Command-line
+  * train.py
+
+    * Input: --config configs/default.yaml
+    * Output: models/\*.keras, scalers, grid\_search.json
+  * forecast.py
+
+    * Input: --config configs/default.yaml, --models models/
+    * Output: forecasts/predicted\_ohlc.csv
+  * backtest.py
+
+    * Input: --config configs/default.yaml, --pred forecasts/predicted\_ohlc.csv
+    * Output: reports/ (equity\_curve.csv, metrics.json, plots)
+
+Optional REST (Assumptions)
+
+* If required later, expose:
+
+  * POST /forecast: body {ticker, cutoff\_date, horizon} -> returns 30-day predicted OHLC
+  * POST /backtest: body {ticker, cutoff\_date, strategy, params} -> returns metrics and trade list
+
+### 2.4 Key Pseudocode (If applicable)
+
+Pseudocode 1: Data preparation and splits
+
+function prepare\_data(ticker, start\_date, cutoff\_date, end\_date):
+df = DataIngestor.fetch(ticker, start\_date, end\_date)
+df = PriceAdjuster.adjust\_ohlc(df)
+(train\_df, test\_df) = Splitter.split\_by\_cutoff(df, cutoff\_date, horizon=30)
+return train\_df, test\_df
+
+Pseudocode 2: Feature windowing per series and scalers
+
+function build\_datasets(train\_df, t):
+scalers = {}
+datasets = {}
+for col in \["Open","High","Low","Close"]:
+s\_train = train\_df\[col]
+scaler = Scaler.fit(s\_train)
+scalers\[col] = scaler
+s\_train\_scaled = scaler.transform(s\_train)
+(X, y) = FeatureWindowing.build\_xy(s\_train\_scaled, t)
+datasets\[col] = (X, y)
+return datasets, scalers
+
+Pseudocode 3: Grid search and training identical architecture for all four DNNs
+
+function train\_dnns(datasets, t, bs, param\_grid, cv\_splits):
+models = {}
+for col in \["Open","High","Low","Close"]:
+(X, y) = datasets\[col]
+estimator = SciKerasRegressor(build\_fn=build\_model, input\_dim=t)
+cv = TimeSeriesSplit(n\_splits=cv\_splits)
+gs = GridSearchCV(estimator, param\_grid=param\_grid, cv=cv, scoring="neg\_mean\_absolute\_error")
+gs.fit(X, y)
+best\_model = gs.best\_estimator\_
+models\[col] = best\_model
+return models, gs.best\_params\_
+
+# build\_model uses:
+
+# Dense(n\*t, relu, kernel\_regularizer=l2(l2)), Dropout(rate),
+
+# Dense(n\*bs, relu, kernel\_regularizer=l2(l2)), Dropout(rate),
+
+# Dense(1, linear), loss=MAE, optimizer=Adam(lr), early stopping on val MAE
+
+Pseudocode 4: 30-step recursive forecasting for OHLC
+
+function recursive\_forecast(train\_df, test\_df, models, scalers, t):
+dates = test\_df.index  # 30 trading days
+preds = DataFrame(index=dates, columns=\["Open","High","Low","Close"])
+
+# Initialize rolling windows with last t actual values from train
+
+last = {}
+for col in OHLC:
+s = concat(\[train\_df\[col]])  # ensure last values available
+s\_scaled = scalers\[col].transform(s)
+last\[col] = FeatureWindowing.last\_window(s\_scaled, t)  # shape (t,)
+for d in dates:
+bar = {}
+for col in OHLC:
+x = last\[col].reshape(1, -1)
+yhat\_scaled = models\[col].predict(x)  # scalar
+yhat = scalers\[col].inverse(yhat\_scaled)
+bar\[col] = yhat
+\# roll window
+last\[col] = roll\_and\_append(last\[col], yhat\_scaled)  # keep scaled
+preds.loc\[d] = \[bar\["Open"], bar\["High"], bar\["Low"], bar\["Close"]]
+return preds
+
+Pseudocode 5: TEMA and signal generation (paper’s rule)
+
+function tema(series, n):
+ema1 = ema(series, n)
+ema2 = ema(ema1, n)
+ema3 = ema(ema2, n)
+return 3*ema1 - 3*ema2 + ema3
+
+function generate\_triple\_ema\_signals(pred\_df, n=3):
+tema\_df = DataFrame({
+"Open": tema(pred\_df\["Open"], n),
+"High": tema(pred\_df\["High"], n),
+"Low":  tema(pred\_df\["Low"],  n),
+"Close"\:tema(pred\_df\["Close"],n)
+})
+signal = Series(0, index=pred\_df.index)
+holding = False
+for d in pred\_df.index:
+entry\_cond = ((pred\_df\["Low"]\[d]  < tema\_df\["Low"]\[d]) or (pred\_df\["High"]\[d] < tema\_df\["High"]\[d]))&#x20;
+and ((pred\_df\["Close"]\[d] < tema\_df\["Close"]\[d]) or (pred\_df\["Open"]\[d] < tema\_df\["Open"]\[d]))
+exit\_cond  = ((pred\_df\["Low"]\[d]  > tema\_df\["Low"]\[d]) or (pred\_df\["High"]\[d] > tema\_df\["High"]\[d]))&#x20;
+and ((pred\_df\["Close"]\[d] > tema\_df\["Close"]\[d]) or (pred\_df\["Open"]\[d] > tema\_df\["Open"]\[d]))
+if not holding and entry\_cond:
+signal\[d] = 1; holding = True
+elif holding and exit\_cond:
+signal\[d] = 0; holding = False
+else:
+signal\[d] = 1 if holding else 0
+return DataFrame({"signal": signal})
+
+Pseudocode 6: Threshold strategy signals
+
+function generate\_threshold\_signals(pred\_df):
+signal = Series(0, index=pred\_df.index)
+holding = False
+for d in pred\_df.index:
+if not holding and pred\_df\["Close"]\[d] > pred\_df\["Open"]\[d]:
+signal\[d] = 1; holding = True
+elif holding and pred\_df\["Close"]\[d] <= pred\_df\["Open"]\[d]:
+signal\[d] = 0; holding = False
+else:
+signal\[d] = 1 if holding else 0
+return DataFrame({"signal": signal})
+
+Pseudocode 7: Backtesting (execute at actual Open; all-in/all-out; fractional shares)
+
+function backtest(actual\_df, signals\_df, initial\_cash, cost\_bps, slip\_bps, allow\_fractional=True):
+cash = initial\_cash; position = 0.0; equity\_curve = Series(index=signals\_df.index)
+trades = \[]
+last\_state = 0  # 0 flat, 1 long
+for d in signals\_df.index:
+desired = signals\_df\["signal"]\[d]
+open\_px = actual\_df\["Open"]\[d]
+\# apply slippage and costs on fill
+fill\_px = open\_px \* (1 + slip\_bps/10000.0) if desired > last\_state else open\_px \* (1 - slip\_bps/10000.0)
+if last\_state == 0 and desired == 1:
+\# enter long: buy with all cash
+qty = cash / fill\_px if allow\_fractional else floor(cash / fill\_px)
+commission = fill\_px \* qty \* (cost\_bps/10000.0)
+cash = cash - qty\*fill\_px - commission
+position = qty
+trades.append({"date": d, "side": "BUY", "qty": qty, "price": fill\_px, "commission": commission})
+elif last\_state == 1 and desired == 0:
+\# exit long: sell all
+proceeds = position \* fill\_px
+commission = proceeds \* (cost\_bps/10000.0)
+cash = cash + proceeds - commission
+trades.append({"date": d, "side": "SELL", "qty": position, "price": fill\_px, "commission": commission})
+position = 0.0
+last\_state = desired
+equity = cash + position \* actual\_df\["Close"]\[d]  # mark-to-market at close for equity curve
+equity\_curve\[d] = equity
+return trades, equity\_curve
+
+Pseudocode 8: Risk metrics
+
+function compute\_metrics(equity\_curve, trades):
+returns = equity\_curve.pct\_change().dropna()
+mdd = max\_drawdown(equity\_curve)
+sharpe = mean(returns) / std(returns) \* sqrt(252)  # daily to annualized
+downside = std(min(0, r) for r in returns) \* sqrt(252)
+sortino = mean(returns) / (downside if downside>0 else NaN)
+calmar = (equity\_curve.iloc\[-1]/equity\_curve.iloc\[0]-1) / (mdd if mdd>0 else NaN)
+
+# expectancy
+
+per\_trade\_pcts = compute\_trade\_returns(trades, equity\_curve.index, actual\_df)  # or from fills
+wins = \[r for r in per\_trade\_pcts if r>0]; losses=\[r for r in per\_trade\_pcts if r<=0]
+win\_rate = len(wins)/len(per\_trade\_pcts) if per\_trade\_pcts else 0
+avg\_win = mean(wins) if wins else 0
+avg\_loss = mean(losses) if losses else 0
+expectancy = win\_rate\*avg\_win - (1-win\_rate)\*abs(avg\_loss)
+return { ... }
+
+Assumptions
+
+* Annualization uses 252 trading days; risk-free rate assumed 0 for Sharpe/Sortino.
+* Equity curve is marked at actual Close each day; fills occur at actual Open.
+
+## 3. Test Plan
+
+### 3.1 Test Cases
+
+Unit tests
+
+* DataIngestor.adjust calendar
+
+  * Input: known days with a weekend gap; Expected: business-day index continuity recognized; no forward-fill of prices.
+* PriceAdjuster.adjust\_ohlc
+
+  * Input: synthetic OHLC with known split adjustment factor; Expected: adjusted OHLC equals known adjusted values.
+* Splitter.split\_by\_cutoff
+
+  * Input: cutoff with at least 30 trading days after; Expected: train end at cutoff; test exactly 30 business days.
+* Scaler
+
+  * Fit/transform/inverse roundtrip preserves scale within tolerance.
+* FeatureWindowing.build\_xy
+
+  * Input: series \[1..10], t=5; Expected: X shape (4,5), y shape (4,), alignment correct.
+* DNNRegressor.build\_model
+
+  * Hidden sizes equal to n*t and n*bs; dropout applied; loss=MAE; optimizer=Adam; seed reproducibility.
+* IndicatorEngine.tema
+
+  * Compare to reference implementation on a known series; TEMA(1) and TEMA(3) sanity checks.
+* StrategyThreshold.generate\_signals
+
+  * Synthetic predicted OHLC where Close>Open for first 3 days, then reverse; Expected: enter at day1, exit at reversal day.
+* StrategyTripleEMA.generate\_signals
+
+  * Synthetic series where price below TEMA then above; Expected: entry and exit events consistent with rule precedence.
+* BacktestEngine.fill and run
+
+  * Enter/exit with given signals; check cash, position, commissions, and equity changes; fractional shares correctness.
+* RiskMetrics
+
+  * Max drawdown on known equity curve; Sharpe on constant-return series; Expectancy from given trade list.
+* ForecastMetrics
+
+  * MAE/RMSE/MAPE/EVS for a simple equal series (expect zeros, EVS=1).
+
+Integration tests
+
+* End-to-end forecast pipeline with fixed seed
+
+  * On a small synthetic dataset: train -> forecast 5 days -> signals -> backtest; deterministic outputs.
+* ARIMA baseline
+
+  * Fit auto-ARIMA using statsmodels on training series; forecast 30 steps; shape and types validated.
+* Leakage guard
+
+  * Ensure scalers fit only on train; no future info used in model training or signal generation.
+
+End-to-end (reproduction) tests
+
+* Replicate paper’s period for ANF
+
+  * Data range: 2011-10-16 to 2021-11-20 (or nearest trading days).
+  * Cutoff: 2021-10-16; horizon: 30 trading days.
+  * Train four DNNs with t=5; recursive forecast 30-day OHLC.
+  * Run StrategyTripleEMA on predictions; execute on actuals.
+  * Expected: number of trades small (≈3–4); non-negative total return; beat buy-and-hold over same 30 days in at least one of the two strategies (threshold or TEMA).
+* Benchmarks
+
+  * Persistence forecaster vs DNN: DNN MAE <= persistence MAE on at least 2/4 OHLC series.
+  * Auto-ARIMA vs DNN: aggregate MAE/EVS comparable to paper (ARIMA much worse).
+
+Robustness/ablation tests
+
+* Sensitivity to t in {3,5,7}: verify stability of metrics and signals count.
+* Costs sensitivity 0–50 bps per side: monotonic degradation of total return.
+* Determinism: Multiple runs with same seeds produce same forecasts and backtest paths.
+
+### 3.2 Frameworks/Tools
+
+* pytest + pytest-cov for tests and coverage.
+* hypothesis for property-based tests on indicators and metrics.
+* flake8/black/isort for style; mypy for typing checks (optional).
+* scikit-learn’s TimeSeriesSplit for CV; SciKeras for KerasRegressor wrapper.
+* statsmodels for Auto-ARIMA (replaces pmdarima for Python 3.13 compatibility).
+* yfinance (or equivalent CSV ingest) for data.
+
+### 3.3 Coverage/Criterion
+
+* Unit test coverage ≥ 85% across src/.
+* No data leakage (scalers/models fit only on training window); validated by tests.
+* Reproducibility: identical outputs across runs with fixed seeds and same environment.
+* Performance acceptance (replication window):
+
+  * Forecast: DNN achieves lower MAE than ARIMA and persistence on Close or at least two OHLC series.
+  * Trading: StrategyTripleEMA or StrategyThreshold yields non-negative total return and ≤ 4 trades; total return comparable to reported magnitude when using same costs/slippage assumptions (see Assumptions below).
+
+---
+
+Assumptions
+
+* Dropout rate: The paper states “dropout of 0.2%”, which is likely a typo. We assume dropout=0.2 (i.e., 20%). Parameterize so it can be set to 0.002 if needed.
+* Hidden layer sizes: As per paper, first hidden = n*t, second hidden = n*bs. With t=bs=5, both layers have 5n units. We will grid-search n in {1, 2, 3, 4} by default.
+* Costs/slippage: Paper mentions commissions/slippage saving but gives no explicit values. Baseline uses 10 bps per side commission and 5 bps slippage per fill (configurable). Set to 0.0 to mirror “no-cost” replication sensitivity.
+* Execution price: Fill at actual Open of the day when signal occurs; equity marked at actual Close. This matches “signals from predictions mapped to actual data.”
+* Signal timing: Signals are generated from predicted OHLC for each test day pre-open; no peeking into actuals for decisions.
+* Triple EMA period: The paper references “3-period Triple EMA” in results; we set n=3 by default.
+* Stationarity/ADF and Auto-ARIMA: Included for completeness and benchmarking using statsmodels; not a required dependency of the DNN pipeline.
+* Risk-free rate: 0% for Sharpe/Sortino.
+* Annualization: Use sqrt(252) factor for daily data; Calmar uses absolute MDD over the 30-day test window.
+* Data provider: Default yfinance; ensure adjusted OHLC via adjustment factor; discrepancies by provider can cause slight metric variance.
+* Exact dates: Paper uses 2011-10-16 to 2021-11-20 with cutoff 2021-10-16 and 30-day test. We will align to nearest trading days from the provider.
+
+Sourced vs Assumed content
+
+* Sourced (IvanLetteri.pdf): Four PA-based DNNs on OHLC; lag window t=5; two hidden layers sized n*t and n*bs; ReLU; Adam; MAE loss; Dropout; recursive 30-day one-step forecasting; Triple EMA entry/exit logic; backtest mapping predicted signals to actual OHLC; initial budget \$100; metrics (MSE, RMSE, MAE, MAPE, EVS; Sharpe, Sortino, Calmar, Max Drawdown; Expectancy, win rate).
+* Sourced (s00\_initial\_plan.txt): Baselines (buy-and-hold, persistence, ARIMA), transaction cost modeling, CLI deliverables, robustness checks.
+* Assumed: Dropout exact rate, explicit operator precedence in Triple EMA rules, exact transaction cost/slippage values, execution at Open, stratified benchmark thresholds, annualization details, and minor engineering choices (SciKeras, yfinance, exact file tree).
+
+Validation
+
+* The TDD covers architecture, detailed design (classes, functions, pseudocode), data flow, strategies, backtesting, and a comprehensive test plan.
+* All required sections are included; ambiguous areas are flagged with assumptions and parameterized for easy adjustment.

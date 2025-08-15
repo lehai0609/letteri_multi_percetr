@@ -1,0 +1,20 @@
+# Minimal dependencies required for Milestone 0 tests and utils
+PyYAML>=5.3
+pandas>=1.1
+numpy>=1.18
+
+# Dev / testing
+pytest>=6.0
+pytest-cov
+
+# Formatting & linting (dev)
+black>=23.9.1
+isort>=5.13.0
+flake8>=6.1.0
+
+# Optional (needed later; not required for Milestone 0)
+pandas-market-calendars>=1.4  # optional precise exchange calendars
+scikit-learn>=0.24
+tensorflow>=2.4
+statsmodels>=0.13.0  # for ARIMA baseline (replaces pmdarima)
+# pmdarima>=1.8  # replaced with statsmodels

@@ -1,0 +1,154 @@
+Below is a practical, dependency-aware development order that lets you deliver value early, keep momentum as a solo dev, and avoid getting blocked. Each step yields a working artifact, includes what to implement, minimal tests, and what it unblocks. The theme is: establish a walking skeleton quickly, then iterate with progressively smarter forecasters and richer evaluation.
+
+Milestone 0 — Lock assumptions and contracts (1–2 hrs)
+- Goal: Freeze ambiguity early and make it configurable so you don’t rework downstream.
+- Do:
+  - Fill configs/default.yaml with: TEMA operator precedence (your assumed conjunctive rule), dropout=0.2 (but keep 0.002 as an option), execution at Open, 10 bps cost and 5 bps slippage (configurable), lag t=5, horizon=30, seeds, asset/dates.
+  - Define strict data contracts:
+    - DataFrame index = DatetimeIndex (trading days), columns = [Open, High, Low, Close, Adj Close, Volume].
+    - Predicted OHLC DataFrame: index = forecast_dates (30 trading days), columns = [Open, High, Low, Close].
+    - Signals DataFrame: index = forecast_dates, column: signal in {0,1}.
+  - Add src/utils/config.py, src/utils/logging.py, src/utils/dates.py stubs.
+- Tests:
+  - Config loads and validates types; dates utils returns 30 trading days given a start.
+- Unblocks: Everything; prevents interface drift.
+
+Milestone 1 — Project scaffolding and fixtures (3–4 hrs)
+- Goal: Repo compiles, tests run, deterministic fixtures exist.
+- Do:
+  - Create folder structure from the TDD.
+  - Add pyproject.toml or requirements.txt, pytest, black/isort/flake8.
+  - Add tests/conftest.py with synthetic data generators:
+    - Simple OHLC random walk fixture (length ~120 days).
+    - Mini CSV fixture for offline tests (avoid network).
+- Tests:
+  - Smoke test that fixtures produce DataFrames with expected schema.
+- Unblocks: You can test without network; fast local iteration.
+
+Milestone 2 — Data layer core (DataIngestor, Splitter, Scaler) (0.5–1 day)
+- Goal: Train/test splits and scaling without leakage.
+- Do:
+  - src/data/ingest.py: DataIngestor with file/yfinance path, validate_calendar.
+  - src/data/adjust.py: PriceAdjuster.adjust_ohlc using Adj Close factor.
+  - src/data/split.py: Splitter.split_by_cutoff(df, cutoff, horizon=30).
+  - src/data/scale.py: Scaler with fit/transform/inverse and save/load; per-series.
+- Tests:
+  - Weekend gap detection; split returns exactly 30 trading days; scaler roundtrip.
+- Unblocks: Feature building and baselines; you have reliable inputs.
+
+Milestone 3 — Backtest engine and risk metrics (1 day)
+- Goal: Trading loop solid before any modeling. This is your main consumer; validate accounting now.
+- Do:
+  - src/backtest/engine.py: Portfolio, execution at Open, fractional shares, costs/slippage.
+  - src/metrics/risk.py: Max drawdown, Sharpe/Sortino/Calmar, win rate, expectancy.
+- Tests:
+  - Deterministic enter/exit with known prices; cash/position math; commissions; MDD on known series; Sharpe on constant returns.
+- Unblocks: You can validate any signal stream immediately.
+
+Milestone 4 — Indicators and simple strategies (half day)
+- Goal: Signal layer ready; use it with placeholder predictions.
+- Do:
+  - src/indicators/tema.py: EMA/TEMA.
+  - src/strategies/threshold.py and src/strategies/triple_ema.py with precedence from config.
+- Tests:
+  - TEMA against a reference; synthetic price below/above TEMA transitions; threshold enter/exit cases.
+- Unblocks: You can generate signals off any predicted OHLC.
+
+Milestone 5 — Walking skeleton end-to-end with persistence forecaster (half day)
+- Goal: Achieve a full pipeline without the DNN to flush out integration bugs.
+- Do:
+  - Minimal “persistence” forecaster: predicted[t] = last observed actual (or simple drift).
+  - Wire: ingest -> adjust -> split -> predict 30-day OHLC (copy last close etc.) -> strategy -> backtest -> risk metrics.
+  - Add src/metrics/forecast.py for MAE/RMSE/MAPE/EVS.
+- Tests:
+  - End-to-end on synthetic data: pipeline runs, produces forecasts, signals, trades, and metrics; no leakage.
+- Unblocks: You can iterate safely; all later models just plug in.
+
+Milestone 6 — Feature windowing and XY datasets (half day)
+- Goal: Reliable input tensors for models.
+- Do:
+  - src/features/window.py: build_xy(series_scaled, t) and last_window(series_scaled, t).
+- Tests:
+  - On series [1..10], t=5 => X shape (4,5), y shape (4,) with correct alignment.
+- Unblocks: Model training.
+
+Milestone 7 — DNN regressor minimal then generalized (1–1.5 days)
+- Goal: Train one series end-to-end, then scale to four.
+- Do:
+  - src/models/dnn.py:
+    - build_model(input_dim, n, t, bs, dropout_rate, lr, l2).
+    - Fit/predict/save/load with SciKerasRegressor (fix seeds).
+  - First, train only Close on a tiny synthetic dataset to verify shape, early stopping, reproducibility.
+  - Then generalize to [Open, High, Low, Close] with a loop.
+  - scripts/train.py with config-driven hyperparams (start with fixed params; add GridSearch later).
+- Tests:
+  - build_model layer sizes, dropout, optimizer/loss; predict shape; save/load parity; reproducibility with same seed.
+- Unblocks: You can produce learned forecasts.
+
+Milestone 8 — Recursive forecaster (0.5 day)
+- Goal: Turn 1-step DNN into 30-step OHLC path without leakage.
+- Do:
+  - src/forecasting/recursive.py:
+    - Uses scalers for each series; maintains scaled rolling window; inverse at each step to write OHLC.
+  - scripts/forecast.py to produce forecasts/predicted_ohlc.csv.
+- Tests:
+  - With a stub model that returns last input, the forecast should equal a persistence forecast; shape and dates check.
+- Unblocks: Real model forecasts into strategies/backtest.
+
+Milestone 9 — GridSearchCV and time-series CV (0.5–1 day, can run longer offline)
+- Goal: Reasonable hyperparams without hand-tuning; still deterministic.
+- Do:
+  - Add TimeSeriesSplit CV; param grid for n, dropout, l2, lr, epochs/batch_size; early stopping via callbacks.
+  - Persist best params to models/grid_search.json.
+- Tests:
+  - Sanity: grid search selects different params on nontrivial data; shapes; CV splits not leaking future.
+- Unblocks: Performance improvements, comparable to paper.
+
+Milestone 10 — Baselines and benchmarks (half day)
+- Goal: Comparative framing.
+- Do:
+  - src/models/arima.py (pmdarima) for Auto-ARIMA.
+  - Buy-and-hold and persistence benchmark runners.
+- Tests:
+  - ARIMA 30-step forecast shapes; raises on too-short series; benchmark metrics computed.
+- Unblocks: Reporting and validation against expectations.
+
+Milestone 11 — Reporting and CLIs (0.5–1 day)
+- Goal: Reproducible reports and single-command runs.
+- Do:
+  - src/reporting/report.py: tables/plots; export equity_curve.csv, metrics.json.
+  - scripts/backtest.py to orchestrate: load forecasts -> strategy -> backtest -> metrics -> report.
+  - scripts/train.py and scripts/forecast.py already exist; wire all three via configs.
+- Tests:
+  - CLI smoke tests using synthetic data; stable outputs with fixed seed.
+
+Milestone 12 — Paper reproduction and robustness (1–2 days, mostly runtime)
+- Goal: Validate the system on the target period and stress assumptions.
+- Do:
+  - Run on ANF (or target) range; verify calendar alignment; cache raw/processed data to disk.
+  - Sensitivity checks: t in {3,5,7}; cost/slippage sweep; determinism across runs.
+  - Ensure DNN beats persistence on at least two series; trading returns non-negative for one strategy.
+- Tests:
+  - E2E tests pinned to a cached snapshot; determinism test (same outputs across runs with same env).
+
+Quick dependency map (what needs to exist before what)
+- BacktestEngine depends only on signals and actual OHLC → build early (Milestone 3).
+- Signals depend on predicted OHLC and indicators → build indicators/strategies before or alongside the walking skeleton (Milestone 4).
+- Predicted OHLC can be stubbed (persistence) → unblock end-to-end early (Milestone 5).
+- DNN depends on feature windowing and scalers → implement after data layer (Milestones 2, 6, 7).
+- RecursiveForecaster depends on trained models and scalers → after DNN (Milestone 8).
+- GridSearch is an enhancement; base DNN should work first (Milestone 9).
+- ARIMA baseline is independent of DNN; add after pipeline works (Milestone 10).
+
+Anti-blocking tactics baked into the order
+- Always keep a working end-to-end path with persistence forecasts. You can drop DNN/ARIMA in and out without touching backtest/strategy layers.
+- Cache raw and processed data early (data/raw, data/processed) to avoid network flakiness.
+- Parameterize ambiguous rules (TEMA precedence, dropout) in config so experiments don’t force code changes.
+- Use synthetic fixtures for fast, deterministic tests; run yfinance only in integration/E2E tests.
+- Freeze DataFrame schemas and index alignment rules at Milestone 0; write tests that fail loudly on schema drift.
+
+Definition of done per milestone
+- Each milestone compiles, runs tests, and leaves you with a scriptable artifact (train.py, forecast.py, backtest.py) or a callable module.
+- Add a short section to README.md when you complete each milestone: how to run it, expected outputs, and caveats.
+
+If you want, I can turn this into a GitHub project board with tasks mapped to the file tree and the test plan you already have, so you can work through it in small PRs.

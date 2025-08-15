@@ -1,0 +1,13 @@
+{
+  "total_return": 0.10433039186887427,
+  "annualized_return": 1.301610366014613,
+  "max_drawdown": 0.025590706768261962,
+  "sharpe": 5.490816005258962,
+  "sortino": 4.666767131362235,
+  "calmar": 50.8626189108967,
+  "trade_count": 0.0,
+  "win_rate": 0.0,
+  "avg_win": 0.0,
+  "avg_loss": 0.0,
+  "expectancy": 0.0
+}

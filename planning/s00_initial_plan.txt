@@ -1,0 +1,82 @@
+Here’s a concrete, implementation-first plan that mirrors the model described in the paper and gets you from raw data to backtested results. No code yet—just the steps and design choices.
+
+Phase 0 — Scope and targets
+
+Asset universe: start with a single stock (as in the paper) and later generalize to a small basket; fix a training cutoff date; produce a 30-trading-day forward forecast.
+Capital and constraints: initial cash $100, all-in/all-out position sizing, allow fractional shares for fidelity; specify transaction costs (e.g., 10 bps each side) and slippage assumptions.
+Success criteria: match or beat a naive “buy-and-hold over the same 30-day window” and a persistence forecaster on both prediction error (MAE/RMSE) and trading PnL metrics.
+Phase 1 — Data pipeline
+
+Ingest: daily OHLC for the chosen asset from a reliable provider; ensure a clean, continuous trading calendar.
+Cleaning: handle splits/dividends (use adjusted prices); forward-fill only non-price metadata; drop days with missing OHLC.
+Train/validation/test splits: use a time-series split with a final fixed cutoff date for the 30-day forward test window.
+Scaling: prepare standardization per series (fit on the training window only), to be applied consistently during recursive forecasting.
+Phase 2 — Determine the input lag window (t)
+
+Replicate the paper’s rationale to set t via an ARIMA-based procedure: fit automatic ARIMA on a representative PA series to infer an optimal lag window; set t accordingly (the paper uses t = 5).
+Lock t for all four networks to keep comparability across O, H, L, C.
+Phase 3 — Feature/target design (Price-Action based)
+
+Build four regression datasets, one per series (Open, High, Low, Close).
+For each network, inputs are the last t values of that same series (i.e., 5 most recent observations); target is the next-day value of that series.
+Optional minimal PA enrichments that do not violate the described setup: daily return and/or difference terms for numerical stability; keep inputs to t to mirror the approach.
+Phase 4 — Model architecture and selection
+
+Use four independent MLP regressors (one per O/H/L/C), identical architecture.
+Architecture: input dimension = t; two hidden layers; hidden sizes parameterized as n × t for the first hidden layer (and a second hidden layer sized proportionally). Choose n and other hyperparameters via grid search; output layer is linear with one neuron.
+Regularization and stabilization: L2 weight decay, early stopping, patience on validation error.
+Tuning: a single GridSearchCV (time-series aware) design whose best configuration is propagated to all four regressors, as described in the paper’s workflow.
+Phase 5 — Training protocol
+
+Rolling/anchored fit: fit each of the four MLPs on the training window; validate on the subsequent validation window; freeze the best model configuration at the cutoff date.
+Save: scalers, model weights, and the exact training/validation indices for reproducibility.
+Phase 6 — Multi-step forecasting (30 trading days)
+
+Recursive strategy: forecast one day ahead using the last t observed values; append the prediction; roll the window; repeat to obtain a 30-day path.
+Do this jointly for O, H, L, C so each day k has a consistent predicted OHLC bar. For days beyond the first, the “current open” used by the strategy will be the predicted open from the O-MLP unless using real-time deployment.
+Phase 7 — Trading strategies to mirror the paper
+
+Strategy A (threshold rule from forecasts):
+Entry: if predicted Close for day d > current day’s Open, go long with all available cash at the open.
+Exit: if predicted Close <= current day’s Open and we hold a position, liquidate the entire position at the open.
+Notes: for backtests on a pure forecast horizon, “current day’s Open” will be the predicted Open; when reproducing on the first out-of-sample day with known Open, use the actual Open if allowed.
+Strategy B (3-period Triple EMA crossing on predictions):
+Compute a 3-period triple exponential moving average (TEMA) on the predicted price series; use predicted Close as the series for clarity/consistency.
+Entry: go long when predicted Close crosses above TEMA(3).
+Exit: liquidate when predicted Close crosses below TEMA(3).
+Note: if you prefer the alternative interpretation (three-EMA crossover system), we can implement that variant too—see questions at the end.
+Phase 8 — Backtesting engine
+
+Execution model: trades at the day’s open per signals generated before the open (consistent with using Open vs predicted Close).
+Accounting: apply commissions/slippage, maintain position, cash, and equity curve; support fractional shares to honor the $100 constraint.
+Benchmarks: buy-and-hold over the same 30 days; naive predictor (ŷt+1 = yt); ARIMA one-step iterative forecast.
+Phase 9 — Evaluation and reporting
+
+Forecast quality: MAE, RMSE, MAPE for each of O/H/L/C; report per-horizon error (1 to 30 days ahead).
+Trading performance: total/annualized return (scaled to 30 days as appropriate), max drawdown, volatility, Sharpe; trade count; hit rate; average win/loss; turnover.
+Plots: predicted vs actual OHLC paths; equity curve vs benchmarks; signal diagrams for both strategies.
+Reproducibility: fixed seeds; environment lockfile; data snapshot date; full config dump.
+Phase 10 — Robustness checks and ablations
+
+Sensitivity to t: try t in {3, 5, 7}.
+Sensitivity to EMA logic: swap TEMA(3) for EMA(3) or a 3-EMA crossover (e.g., 3/5/8).
+Transaction costs: sweep 0–50 bps per side; report degradation.
+Walk-forward: retrain weekly and re-forecast to test stability.
+Baseline model substitutions: compare to a small LSTM/1D-CNN using the same lag window to test whether the MLP is indeed near the sweet spot of generalization vs convergence.
+Phase 11 — Packaging and governance
+
+Deliverables: reproducible notebook(s), CLI script for batch runs, configuration files, and a concise README with step-by-step instructions.
+Model cards: document data coverage, assumptions (e.g., all-in/all-out), and known limitations.
+Ethics/monitoring: add guardrails for deployment (e.g., position caps, daily loss limits) and logging to review behavior for potential rule violations.
+Optional extensions (aligned with the paper’s “future work”)
+
+More indicators: add technical features and revisit feature selection with XAI methods; only after reproducing the core setup.
+Class-imbalance remedies for a classification-style version (buy/sell/hold labels): evaluate targeted oversampling and Generative 1-NN to balance classes, then compare to the regression-driven approach.
+Broader markets: repeat the workflow on other stocks, then on crypto/DeFi tokens with appropriate calendar handling.
+Open questions to confirm before implementation
+
+Triple EMA interpretation: should we use TEMA(3) vs predicted Close crossing, or a three-EMA crossover system (short/medium/long EMAs) applied to predicted prices?
+Costs/slippage: what commission/slippage assumptions should we fix for the baseline?
+Asset and dates: which ticker(s) and what exact training cutoff date should we use first? Do you want to replicate the paper’s stated training end date for comparability or run on a recent period?
+Fractional shares: acceptable in backtest, or should we round to whole shares given the $100 budget?
+If this plan looks right, I can translate it into a reproducible implementation next.

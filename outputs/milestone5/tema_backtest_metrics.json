@@ -1,0 +1,13 @@
+{
+  "total_return": 0.0,
+  "annualized_return": 0.0,
+  "max_drawdown": 0.0,
+  "sharpe": NaN,
+  "sortino": NaN,
+  "calmar": NaN,
+  "trade_count": 0.0,
+  "win_rate": 0.0,
+  "avg_win": 0.0,
+  "avg_loss": 0.0,
+  "expectancy": 0.0
+}
